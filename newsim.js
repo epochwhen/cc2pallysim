@@ -147,6 +147,19 @@ class SanctityAura extends Aura {
     }
 }
 
+class TwoHandedSpec extends Aura {
+    name = "Two-Handed Spec"
+    duration = Infinity
+    currentDuration = Infinity
+
+    apply = (damage) => {
+        if (damage.school === School.PHYSICAL) {
+            return new Damage(damage.school, Math.floor(damage.value * 1.06), damage.outcome)
+        }
+        return damage
+    }
+}
+
 class Vengeance extends Aura {
     name = "Vengeance"
     duration = 30000
@@ -196,7 +209,6 @@ class Zeal extends Aura {
     }
 
     removeHaste = () => {
-        // Reset to base swing speed
         this.context.STATS.MeleeHaste -= 5 * this.stacks
     }
 
@@ -320,7 +332,10 @@ class CrusaderStrike extends Ability {
         const afterDebuffs = Utils.applyEffects(this.context.DEBUFFS, afterBuffs)
         const damage = Utils.rollAttackTable(afterDebuffs, 2.0, false, this.context)
         this.currentCooldown = this.cooldown
-        this.context.ROTATION.filter(ability => ability.name === "Holy Strike")[0].currentCooldown = this.cooldown // uncomment for experimental zeal
+        const holyStrike = this.context.ROTATION.filter(ability => ability.name === "Holy Strike")[0]
+        if (holyStrike) {
+            holyStrike.currentCooldown = this.cooldown 
+        }
         Utils.log(this.name, damage, this.context)
         
         this.context.BUFFS.filter(buff => buff.name === "Zeal")[0].activate()
@@ -340,7 +355,7 @@ class CrusaderStrike extends Ability {
     canCast = () => {
         const holyStrike = this.context.ROTATION.find(a => a.name === "Holy Strike")
         // Only cast if Holy Strike cannot be cast
-        return !holyStrike.canCast()
+        return !holyStrike || !holyStrike.canCast()
     }
 }
 
@@ -368,6 +383,67 @@ class Judgement extends Ability {
             Utils.performProcs(false, this.name, this.context)
         }
 
+    }
+}
+
+class Exorcism extends Ability {
+    constructor(context) {
+        super(context)
+        this.name = "Exorcism"
+        this.cooldown = 15 * 1000
+        this.currentCooldown = 0
+        this.gcdBound = true
+        this.triggersGcd = true
+        this.school = School.HOLY
+    }
+
+    perform = () => {
+         const damage = Utils.rollSpellTable(Utils.applyEffects(this.context.DEBUFFS, {
+            school: School.HOLY,
+            outcome: null,
+            value: Utils.applyEffects(this.context.BUFFS, {
+                school: School.HOLY,
+                outcome: null,
+                value: 535 + this.context.STATS.SpellPower * 0.43
+            }).value
+        }), 1.5, false, this.context)
+
+        this.currentCooldown = this.cooldown
+        Utils.log(this.name, damage, this.context)
+
+        if (Utils.isDamageConnecting(damage)) {
+            Utils.performVengeance(damage, this.context)
+            Utils.performProcs(false, this.name, this.context)
+        }
+
+    }
+}
+
+class StratholmeHolyWater extends Ability {
+    constructor(context) {
+        super(context)
+        this.name = "Stratholme Holy Water"
+        this.cooldown = 120 * 1000
+        this.currentCooldown = 0
+        this.gcdBound = false
+        this.triggersGcd = false
+        this.school = School.HOLY
+    }
+    perform = () => {
+        const damage = Utils.rollSpellTable(Utils.applyEffects(this.context.DEBUFFS, {
+            school: School.HOLY,
+            outcome: null,
+            value: Utils.applyEffects(this.context.BUFFS, {
+                school: School.HOLY,
+                outcome: null,
+                value: 501 + this.context.STATS.SpellPower 
+            }).value
+        }), 1, true, this.context)
+        this.currentCooldown = this.cooldown
+        Utils.log(this.name, damage, this.context)
+        if (Utils.isDamageConnecting(damage)) {
+            Utils.performProcs(false, this.name, this.context)
+        }
     }
 }
 
@@ -496,11 +572,9 @@ class Utils {
     static performProcs = (isExtraAttack, name, context) => {
         context.PROCS.forEach((proc) => {
             if (proc.proccedBy.includes(name)) {
-                if (!(isExtraAttack && (proc.name === "Windfury") || (proc.name === "Hand of Justice"))) {
-                    const roll = Utils.randomIntFromInterval(0, 100)
-                    if (roll < proc.chance()) {
-                        proc.perform(isExtraAttack)
-                    }
+                const roll = Utils.randomIntFromInterval(0, 100)
+                if (roll < proc.chance()) {
+                    proc.perform(isExtraAttack)
                 }
             }
         })
@@ -602,6 +676,8 @@ class WindfuryProc extends Proc {
     get proccedBy() { return ["Auto Attack", "Holy Strike", "Crusader Strike", "Seal of Righteousness", "Judgement"] }
     chance() { return 15 * this.context.GLOBAL_PROC_MULT }
     perform() {
+        if (this.internalCooldown > 0) return; // I guess it is 1.5s for the aura in cc2. not super fact checked
+        this.internalCooldown = 1500;
         Utils.logWithTimestamp("You gained an extra attack through Windfury", this.context)
         this.context.ROTATION.filter(ability => ability.name === "Auto Attack")[0].perform(true)
     }
@@ -634,6 +710,26 @@ class SealOfRighteousnessProc extends Proc {
         }), 1, true, this.context)
         Utils.log("Seal of Righteousness", damage, this.context)
         Utils.performProcs(isExtraAttack, "Seal of Righteousness", this.context)
+    }
+}
+
+class DragonbreathChiliProc extends Proc {
+    get name() { return "Dragonbreath Chili" }
+    get proccedBy() { return ["Auto Attack", "Holy Strike", "Crusader Strike"] }
+    chance() { return 5 * this.context.GLOBAL_PROC_MULT } //needs citation
+    perform() {
+        const damage = Utils.rollSpellTable(Utils.applyEffects(this.context.DEBUFFS, {
+            school: School.FIRE,
+            outcome: null,
+            value: Utils.applyEffects(this.context.BUFFS, {
+                school: School.FIRE,
+                outcome: null,
+                value: 61 // + this.context.STATS.SpellPower
+            }).value
+        }), 1.5, false, this.context)
+        Utils.log("Dragonbreath Chili", damage, this.context)
+        Utils.performVengeance(damage, this.context)
+        Utils.performProcs(false, "Dragonbreath Chili", this.context)
     }
 }
 
@@ -693,25 +789,25 @@ class ArmorDebuff extends Debuff {
 }
 
 const STATS = {
-    Strength: 355,
-    AttackPower: 870,
-    SpellPower: 379,
-    MeleeCritChance: 23.49,
+    Strength: 299,
+    AttackPower: 758,
+    SpellPower: 479,
+    MeleeCritChance: 23.14,
     SpellCritChance: 7.88,
-    BaseMeleeHaste: 9,
+    BaseMeleeHaste: 2,
     MeleeHaste: 0,
     BaseWeaponDamageMin: 259, //ashbringer
     BaseWeaponDamageMax: 389,
     WeaponSkill: 311,
     BaseSwingSpeed: 3.6,
-    CurrentSwingSpeed: 3.29,
+    CurrentSwingSpeed: 3.53,
     MeleeHitChance: 6,
     SpellHitChance: 6
 }
 
 const sim = async () => {
     const SIM_DURATION = 2 * 60 * 1000 // 2 minutes
-    const SIM_TICK = 20 
+    const SIM_TICK = 100
 
     const context = {
         STATS: JSON.parse(JSON.stringify(STATS)),
@@ -726,14 +822,16 @@ const sim = async () => {
         NUMBER_OF_TARGETS: 1,
         TARGET_LEVEL_DIFF: 3,
         SEAL: "Seal of Righteousness",
+        TARGET_TYPE: "Undead",
         GLOBAL_PROC_MULT: 1,
         ABILITY_STATS: {} // { [abilityName]: { count: 0, totalDamage: 0 } }
     }
 
     context.BUFFS = [
-        new TheUntamedBladeBuff(context),
+        // new TheUntamedBladeBuff(context),
         new SpellBlasting(context),
         new SanctityAura(context),
+        new TwoHandedSpec(context),
         new Vengeance(context),
         new Zeal(context),
         new HolyMight(context),
@@ -746,12 +844,20 @@ const sim = async () => {
         new Consecration(context),
     ]
 
+    if (context.TARGET_TYPE === "Undead" || context.TARGET_TYPE === "Demon") {
+        context.ROTATION.push(new Exorcism(context))
+    }
+    if (context.TARGET_TYPE === "Undead") {
+        context.ROTATION.push(new StratholmeHolyWater(context))
+    }
+
     context.PROCS = [
         new AshbringerProc(context),
         new WrathOfCenariusProc(context),
-        // new WindfuryProc(context),
+        new WindfuryProc(context),
         // new HandOfJusticeProc(context),
         new SealOfRighteousnessProc(context),
+        new DragonbreathChiliProc(context),
         new PlusDamEffect(context),
     ]
 
